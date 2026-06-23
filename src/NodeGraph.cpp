@@ -23,7 +23,7 @@
 #define NGF_FORCE_INLINE inline
 #endif
 
-namespace node_graph_format {
+namespace ng {
 
 // Helper to get bit scan forward result as a value
 NGF_FORCE_INLINE unsigned bsf(unsigned mask)
@@ -1978,6 +1978,6 @@ std::string_view NodeGraph::allocString(std::string_view s)
     return mPool.allocString(s);
 }
 
-} // namespace node_graph_format
+} // namespace ng
 
 #undef NGF_FORCE_INLINE

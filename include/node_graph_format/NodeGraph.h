@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace node_graph_format {
+namespace ng {
 
 struct NodeValue;
 struct GraphNode;
@@ -202,4 +202,4 @@ private:
     std::string mError;
 };
 
-} // namespace node_graph_format
+} // namespace ng

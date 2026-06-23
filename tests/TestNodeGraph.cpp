@@ -2,7 +2,7 @@
 #include "node_graph_format/NodeGraph.h"
 #include <string>
 
-using namespace node_graph_format;
+using namespace ng;
 using String = std::string;
 
 TEST_CASE("NodeGraph basic properties", "[nodegraph]")
