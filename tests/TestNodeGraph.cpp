@@ -299,6 +299,33 @@ TEST_CASE("NodeGraph table array", "[nodegraph]")
     REQUIRE(player2->getString("name") == "name 2");
 }
 
+TEST_CASE("NodeGraph dump preserves table array format", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        players = [
+            #Player id name position meta
+            1 "name 1" [4, 5, 6] { x = 1 y = 2 }
+            2 "name 2" [7, 8, 9] { x = 3 y = 4 }
+        ]
+    })"));
+
+    String dumped = cfg.dump();
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(dumped.find("players = [\n") != String::npos);
+    REQUIRE(dumped.find("    #Player id name position meta\n") != String::npos);
+    REQUIRE(dumped.find("    1 \"name 1\" [4, 5, 6] { x = 1 y = 2 }\n") != String::npos);
+    REQUIRE(dumped.find("    2 \"name 2\" [7, 8, 9] { x = 3 y = 4 }\n") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    auto* players = reparsed.getRoot().getList("players");
+    REQUIRE(players != nullptr);
+    REQUIRE(players->size() == 2);
+    REQUIRE(players->at(0).asObject()->className == "Player");
+    REQUIRE(players->at(0).asObject()->getObject("meta")->getInt("x") == 1);
+}
+
 TEST_CASE("NodeGraph nested table array", "[nodegraph]")
 {
     NodeGraph cfg;
@@ -327,6 +354,36 @@ TEST_CASE("NodeGraph nested table array", "[nodegraph]")
     REQUIRE(players->size() == 2);
     REQUIRE(players->at(0).asObject()->className == "Player");
     REQUIRE(players->at(0).asObject()->getInt("id") == 10);
+    REQUIRE(players->at(1).asObject()->getString("name") == "name 11");
+}
+
+TEST_CASE("NodeGraph dump preserves nested table array format", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        teams = [
+            #Team id players
+            1 [
+                #Player id name
+                10 "name 10"
+                11 "name 11"
+            ]
+        ]
+    })"));
+
+    String dumped = cfg.dump();
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(dumped.find("    #Team id players\n") != String::npos);
+    REQUIRE(dumped.find("    1 [\n") != String::npos);
+    REQUIRE(dumped.find("        #Player id name\n") != String::npos);
+    REQUIRE(dumped.find("        10 \"name 10\"\n") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    auto* teams = reparsed.getRoot().getList("teams");
+    REQUIRE(teams != nullptr);
+    auto* players = teams->at(0).asObject()->getList("players");
+    REQUIRE(players != nullptr);
     REQUIRE(players->at(1).asObject()->getString("name") == "name 11");
 }
 
@@ -518,6 +575,26 @@ TEST_CASE("NodeGraph dump format", "[nodegraph]")
     REQUIRE(dumped.find("}") != String::npos);
 }
 
+TEST_CASE("NodeGraph dump separates properties and DSL children", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"(Scene {
+        Active = true
+        Node "Player" {
+            id = 1
+        }
+    })"));
+
+    String dumped = cfg.dump();
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(dumped.find("    Active = true\n\n    Node \"Player\" {") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    REQUIRE(reparsed.getRoot().getBool("Active"));
+    REQUIRE(reparsed.getRoot().children.size() == 1);
+}
+
 TEST_CASE("NodeGraph dump quotes non-identifier property names", "[nodegraph]")
 {
     NodeGraph cfg;
@@ -552,6 +629,50 @@ TEST_CASE("NodeGraph dump simple array one line", "[nodegraph]")
     String dumped = cfg.dump();
     // Simple array should be on one line
     REQUIRE(dumped.find("pos = [1, 2, 3]") != String::npos);
+}
+
+TEST_CASE("NodeGraph dump nested inline array one line", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        matrix = [[1, 2], [3, 4]]
+    })"));
+
+    String dumped = cfg.dump();
+    REQUIRE(dumped.find("matrix = [[1, 2], [3, 4]]") != String::npos);
+}
+
+TEST_CASE("NodeGraph dump preserves inline object property", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"(Node {
+        Meta = { x = 1 y = 2 z = 3 }
+    })"));
+
+    String dumped = cfg.dump();
+    REQUIRE(dumped.find("Meta = { x = 1 y = 2 z = 3 }") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    const GraphNode* meta = reparsed.getRoot().getObject("Meta");
+    REQUIRE(meta != nullptr);
+    REQUIRE(meta->getInt("z") == 3);
+}
+
+TEST_CASE("NodeGraph dump preserves multiline object property", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"(Node {
+        Meta = {
+            x = 1
+            y = 2
+            z = 3
+        }
+    })"));
+
+    String dumped = cfg.dump();
+    REQUIRE(dumped.find("Meta = {\n") != String::npos);
+    REQUIRE(dumped.find("Meta = { x = 1 y = 2 z = 3 }") == String::npos);
 }
 
 TEST_CASE("NodeGraph dump complex array multi line", "[nodegraph]")

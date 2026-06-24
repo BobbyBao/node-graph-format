@@ -31,6 +31,13 @@ struct NodeValue {
     };
 
     Type type = Null;
+    enum Format : uint8_t {
+        DefaultFormat,
+        InlineFormat,
+        TableFormat
+    };
+
+    Format format = DefaultFormat;
     union {
         bool boolVal;
         int64_t intVal;

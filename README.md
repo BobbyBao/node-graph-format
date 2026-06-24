@@ -182,6 +182,9 @@ use the normal value parser, so inline objects, arrays, and nested tables are va
 }
 ```
 
+`dump()` preserves parsed table arrays as table arrays when the rows still have the same schema. Simple arrays,
+including nested primitive arrays, are emitted inline.
+
 ### Inline Objects
 
 An inline object can be anonymous:
@@ -189,8 +192,11 @@ An inline object can be anonymous:
 ```ngf
 {
     size = { width = 1920 height = 1080 }
+    meta = { x = 1 y = 2 z = 3 }
 }
 ```
+
+When parsed from a single line, `dump()` preserves object values as inline values where possible.
 
 Or typed:
 
@@ -419,6 +425,7 @@ after the owning `NodeGraph` is destroyed or reparsed.
 - Integer values are parsed as signed 64-bit integers.
 - Floating-point values are parsed as `double`.
 - `dump()` emits parseable text and preserves integral-looking float values as floats, for example `1.0`.
+- `dump()` preserves parsed table arrays when possible, and emits simple arrays inline.
 - Source block values are stored as `NodeValue::Source`, not normal strings.
 - This library only handles the text graph format. Higher-level object serialization, reflection, or engine binding
   should live outside this library.

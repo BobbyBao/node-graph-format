@@ -1,4 +1,5 @@
 #include "node_graph_format/NodeGraph.h"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <charconv>
@@ -45,11 +46,13 @@ void NodeValue::destroy() noexcept
         break;
     }
     type = Null;
+    format = DefaultFormat;
     intVal = 0;
 }
 
 NodeValue::NodeValue(NodeValue&& other) noexcept
     : type(other.type)
+    , format(other.format)
 {
     switch (type) {
     case Null: intVal = 0; break;
@@ -68,6 +71,7 @@ NodeValue::NodeValue(NodeValue&& other) noexcept
         break;
     }
     other.type = Null;
+    other.format = DefaultFormat;
     other.intVal = 0;
 }
 
@@ -76,6 +80,7 @@ NodeValue& NodeValue::operator=(NodeValue&& other) noexcept
     if (this != &other) {
         destroy();
         type = other.type;
+        format = other.format;
         switch (type) {
         case Null: intVal = 0; break;
         case Bool: boolVal = other.boolVal; break;
@@ -93,6 +98,7 @@ NodeValue& NodeValue::operator=(NodeValue&& other) noexcept
             break;
         }
         other.type = Null;
+        other.format = DefaultFormat;
         other.intVal = 0;
     }
     return *this;
@@ -655,6 +661,16 @@ private:
     static constexpr char CLOSESQUARE = ']';
     static constexpr char COMMA = ',';
 
+    bool hasLineBreak(size_t start, size_t end) const
+    {
+        end = std::min(end, s.length());
+        for (size_t pos = start; pos < end; ++pos) {
+            if (s[pos] == '\n' || s[pos] == '\r')
+                return true;
+        }
+        return false;
+    }
+
     NGF_FORCE_INLINE void skipWs()
     {
         while (i < s.length()) {
@@ -926,6 +942,7 @@ private:
         if (kCharTable.isNumStart(c))
             return parseNumber();
         if (c == OPENBRACE) {
+            size_t openPos = i;
             ++i; // consume OPENBRACE
             skipWs();
 
@@ -940,7 +957,10 @@ private:
                 auto* obj = mPool->create();
                 parseElements(*obj);
                 consume(CLOSEBRACE);
-                return NodeValue::makeObject(obj);
+                auto value = NodeValue::makeObject(obj);
+                if (!hasLineBreak(openPos, i))
+                    value.format = NodeValue::InlineFormat;
+                return value;
             }
         }
         if (c == OPENSQUARE)
@@ -964,10 +984,14 @@ private:
 
         // Check for TypeName { } syntax (typed inline object)
         if (i < s.length() && s[i] == OPENBRACE) {
+            size_t openPos = i;
             auto* obj = mPool->create();
             obj->className = ident;
             parseObjectBody(*obj);
-            return NodeValue::makeObject(obj);
+            auto value = NodeValue::makeObject(obj);
+            if (!hasLineBreak(openPos, i))
+                value.format = NodeValue::InlineFormat;
+            return value;
         }
 
         // Otherwise treat as bare string value
@@ -1095,6 +1119,7 @@ private:
     {
         TableSchema schema = parseTableSchema();
         auto v = NodeValue::makeList();
+        v.format = NodeValue::TableFormat;
         v.list.reserve(8);
 
         while (true) {
@@ -1833,6 +1858,146 @@ NGF_FORCE_INLINE void writePropertyName(std::string_view name, DumpBuffer& out)
 
 void serializeValue(const NodeValue& v, int indent, DumpBuffer& out);
 
+bool canSerializeInlineValue(const NodeValue& v);
+
+bool canSerializeInlineObject(const GraphNode* obj)
+{
+    if (!obj || !obj->children.empty())
+        return false;
+
+    for (const auto& prop : obj->properties) {
+        if (!prop.label.empty() || (!prop.name.empty() && prop.name[0] == '@') || prop.value.isSource())
+            return false;
+        if (!canSerializeInlineValue(prop.value))
+            return false;
+    }
+
+    return true;
+}
+
+bool canSerializeInlineValue(const NodeValue& v)
+{
+    switch (v.type) {
+    case NodeValue::Source:
+        return false;
+    case NodeValue::Object:
+        return canSerializeInlineObject(v.objectVal);
+    case NodeValue::List:
+        if (v.format == NodeValue::TableFormat)
+            return false;
+        for (const auto& elem : v.list) {
+            if (!canSerializeInlineValue(elem))
+                return false;
+        }
+        return true;
+    default:
+        return true;
+    }
+}
+
+void serializeInlineValue(const NodeValue& v, int indent, DumpBuffer& out);
+
+void serializeInlineObject(const GraphNode& obj, int indent, DumpBuffer& out)
+{
+    if (!obj.className.empty()) {
+        out.write(obj.className.data(), obj.className.size());
+        out.write(' ');
+    }
+
+    out.write("{ ", 2);
+    for (size_t k = 0; k < obj.properties.size(); ++k) {
+        if (k > 0)
+            out.write(' ');
+        const auto& prop = obj.properties[k];
+        writePropertyName(prop.name, out);
+        out.write(" = ", 3);
+        serializeInlineValue(prop.value, indent, out);
+    }
+    out.write(" }", 2);
+}
+
+void serializeInlineValue(const NodeValue& v, int indent, DumpBuffer& out)
+{
+    if (v.type == NodeValue::List && canSerializeInlineValue(v)) {
+        out.write('[');
+        for (size_t k = 0; k < v.list.size(); ++k) {
+            if (k > 0)
+                out.write(", ", 2);
+            serializeInlineValue(v.list[k], indent, out);
+        }
+        out.write(']');
+        return;
+    }
+
+    if (v.type == NodeValue::Object && canSerializeInlineObject(v.objectVal)) {
+        serializeInlineObject(*v.objectVal, indent, out);
+        return;
+    }
+
+    serializeValue(v, indent, out);
+}
+
+bool canSerializeTable(const NodeValue& v)
+{
+    if (v.format != NodeValue::TableFormat || v.type != NodeValue::List || v.list.empty())
+        return false;
+
+    const auto* first = v.list[0].asObject();
+    if (!first || !first->name.empty() || !first->children.empty())
+        return false;
+    if (!first->className.empty() && !isBareIdentifier(first->className))
+        return false;
+
+    for (const auto& prop : first->properties) {
+        if (!isBareIdentifier(prop.name) || prop.value.isSource())
+            return false;
+    }
+
+    for (const auto& elem : v.list) {
+        const auto* row = elem.asObject();
+        if (!row || row->className != first->className || !row->name.empty() || !row->children.empty())
+            return false;
+        if (row->properties.size() != first->properties.size())
+            return false;
+
+        for (size_t k = 0; k < first->properties.size(); ++k) {
+            if (row->properties[k].name != first->properties[k].name || row->properties[k].value.isSource())
+                return false;
+        }
+    }
+
+    return true;
+}
+
+void serializeTable(const NodeValue& v, int indent, DumpBuffer& out)
+{
+    const auto* first = v.list[0].asObject();
+    out.write("[\n", 2);
+    out.writeIndent(indent + 1);
+    out.write('#');
+    if (!first->className.empty())
+        out.write(first->className.data(), first->className.size());
+    for (const auto& prop : first->properties) {
+        out.write(' ');
+        out.write(prop.name.data(), prop.name.size());
+    }
+    out.write('\n');
+
+    for (const auto& elem : v.list) {
+        const auto* row = elem.asObject();
+        out.writeIndent(indent + 1);
+        for (size_t k = 0; k < row->properties.size(); ++k) {
+            if (k > 0)
+                out.write(' ');
+            serializeInlineValue(row->properties[k].value, indent + 1, out);
+        }
+        out.write('\n');
+    }
+
+    out.writeIndent(indent);
+    out.write(']');
+}
+
 void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
 {
     if (indent >= kMaxSerializeDepth)
@@ -1855,8 +2020,10 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
         writePropertyName(prop.name, out);
         out.write(" = ", 3);
         if (prop.value.isObject() && prop.value.asObject()) {
-            const auto* obj = prop.value.asObject();
-            if (!obj->className.empty()) {
+            if (prop.value.format == NodeValue::InlineFormat && canSerializeInlineValue(prop.value)) {
+                serializeInlineValue(prop.value, indent, out);
+                out.write('\n');
+            } else if (const auto* obj = prop.value.asObject(); !obj->className.empty()) {
                 out.write(obj->className.data(), obj->className.size());
                 out.write(" {\n", 3);
                 serializeObjectBody(*obj, indent + 1, out);
@@ -1873,6 +2040,9 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
             out.write('\n');
         }
     }
+    if (!node.properties.empty() && !node.children.empty())
+        out.write('\n');
+
     for (const auto* child : node.children) {
         out.writeIndent(indent);
         out.write(child->className.data(), child->className.size());
@@ -1923,6 +2093,11 @@ void serializeValue(const NodeValue& v, int indent, DumpBuffer& out)
         out.write('}');
         break;
     case NodeValue::List: {
+        if (canSerializeTable(v)) {
+            serializeTable(v, indent, out);
+            break;
+        }
+
         bool isTypedObjectArray = true;
         bool isUntypedObjectArray = true;
         for (const auto& elem : v.list) {
@@ -1968,19 +2143,12 @@ void serializeValue(const NodeValue& v, int indent, DumpBuffer& out)
             out.writeIndent(indent);
             out.write('}');
         } else {
-            bool simple = true;
-            for (const auto& elem : v.list) {
-                if (elem.type == NodeValue::Object || elem.type == NodeValue::List || elem.type == NodeValue::Source) {
-                    simple = false;
-                    break;
-                }
-            }
-            if (simple) {
+            if (canSerializeInlineValue(v)) {
                 out.write('[');
                 for (size_t k = 0; k < v.list.size(); ++k) {
                     if (k > 0)
                         out.write(", ", 2);
-                    serializeValue(v.list[k], indent, out);
+                    serializeInlineValue(v.list[k], indent, out);
                 }
                 out.write(']');
             } else {
