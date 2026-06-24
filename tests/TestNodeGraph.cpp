@@ -1,5 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include "node_graph_format/NodeGraph.h"
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <sstream>
 #include <string>
 
 using namespace ng;
@@ -1164,4 +1168,241 @@ TEST_CASE("NodeGraph round-trip untyped object array block", "[nodegraph]")
     REQUIRE(tags->at(0).asObject()->className.empty());
     REQUIRE(tags->at(0).asObject()->getString("key") == "value1");
     REQUIRE(tags->at(1).asObject()->getString("key") == "value2");
+}
+
+TEST_CASE("NodeGraph accessor defaults and type safety", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        enabled = true
+        count = 7
+        ratio = 2.5
+        name = "unit"
+        values = [1, 2]
+        nested = { value = 9 }
+    })"));
+
+    const auto& root = cfg.getRoot();
+    REQUIRE(root.getBool("enabled", false));
+    REQUIRE(root.getBool("missingBool", true));
+    REQUIRE(root.getBool("count", true)); // Wrong type returns caller default.
+
+    REQUIRE(root.getInt("count", -1) == 7);
+    REQUIRE(root.getInt("missingInt", -1) == -1);
+    REQUIRE(root.getInt("ratio", -1) == -1);
+
+    REQUIRE(root.getFloat("count", -1.0) == 7.0); // Ints are valid floats.
+    REQUIRE(root.getFloat("ratio", -1.0) == 2.5);
+    REQUIRE(root.getFloat("name", -1.0) == -1.0);
+
+    REQUIRE(root.getString("name", "fallback") == "unit");
+    REQUIRE(root.getString("enabled", "fallback") == "fallback");
+    REQUIRE(root.getObject("nested") != nullptr);
+    REQUIRE(root.getObject("values") == nullptr);
+    REQUIRE(root.getList("values") != nullptr);
+    REQUIRE(root.getList("nested") == nullptr);
+}
+
+TEST_CASE("NodeGraph duplicate properties update the indexed value", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        value = 1
+        value = 2
+        value = 3
+    })"));
+
+    const auto& root = cfg.getRoot();
+    REQUIRE(root.properties.size() == 3);
+    REQUIRE(root.properties[0].value.asInt() == 1);
+    REQUIRE(root.properties[1].value.asInt() == 2);
+    REQUIRE(root.properties[2].value.asInt() == 3);
+    REQUIRE(root.getInt("value") == 3);
+}
+
+TEST_CASE("NodeGraph addProperty keeps property index coherent", "[nodegraph]")
+{
+    NodeGraph cfg;
+    auto& root = cfg.getRoot();
+
+    root.addProperty(cfg.allocString("value"), NodeValue::makeInt(1));
+    REQUIRE(root.getInt("value") == 1); // Builds the lookup index.
+
+    root.addProperty(cfg.allocString("value"), NodeValue::makeInt(2));
+    REQUIRE(root.properties.size() == 1);
+    REQUIRE(root.getInt("value") == 2);
+
+    root.addProperty(cfg.allocString("second"), NodeValue::makeString(cfg.allocString("ok")));
+    REQUIRE(root.properties.size() == 2);
+    REQUIRE(root.getString("second") == "ok");
+}
+
+TEST_CASE("NodeGraph child lookup returns expected matches in order", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"(Scene {
+        Node "Player" { id = 1 }
+        Light "Key" { intensity = 3.0 }
+        Node "Enemy" { id = 2 }
+    })"));
+
+    const auto& root = cfg.getRoot();
+    const GraphNode* firstNode = root.findChild("Node");
+    REQUIRE(firstNode != nullptr);
+    REQUIRE(firstNode->name == "Player");
+
+    auto nodes = root.findChildren("Node");
+    REQUIRE(nodes.size() == 2);
+    REQUIRE(nodes[0]->name == "Player");
+    REQUIRE(nodes[1]->name == "Enemy");
+    REQUIRE(root.findChild("Camera") == nullptr);
+    REQUIRE(root.findChildren("Camera").empty());
+}
+
+TEST_CASE("NodeGraph escaped strings and unicode survive round-trip", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(
+        "{\n"
+        "    escaped = \"line\\n\\tquote\\\"slash\\\\solidus\\/\"\n"
+        "    unicode = \"snowman: \\u2603\"\n"
+        "    Node \"name\\u0020with\\u0020space\" { value = 1 }\n"
+        "}"));
+
+    const auto& root = cfg.getRoot();
+    REQUIRE(root.getString("escaped") == "line\n\tquote\"slash\\solidus/");
+    REQUIRE(root.getString("unicode") == std::string_view("snowman: \xE2\x98\x83"));
+
+    REQUIRE(root.children.size() == 1);
+    const GraphNode* node = root.children[0];
+    REQUIRE(node != nullptr);
+    REQUIRE(node->className == "Node");
+    REQUIRE(node->name == "name with space");
+
+    NodeGraph reparsed;
+    String dumped = cfg.dump();
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(reparsed.parse(dumped));
+    REQUIRE(reparsed.getRoot().getString("escaped") == root.getString("escaped"));
+    REQUIRE(reparsed.getRoot().getString("unicode") == root.getString("unicode"));
+}
+
+TEST_CASE("NodeGraph rejects malformed unicode escapes", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE_FALSE(cfg.parse(R"({ value = "\u12G4" })"));
+    REQUIRE_FALSE(cfg.getError().empty());
+
+    REQUIRE_FALSE(cfg.parse(R"({ value = "\u12" })"));
+    REQUIRE_FALSE(cfg.getError().empty());
+
+    REQUIRE_FALSE(cfg.parse(R"(Node "bad\u00G0" { value = 1 })"));
+    REQUIRE_FALSE(cfg.getError().empty());
+}
+
+TEST_CASE("NodeGraph parse resets root and error after failure", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({ oldValue = 1 })"));
+    REQUIRE(cfg.getRoot().hasProperty("oldValue"));
+
+    REQUIRE_FALSE(cfg.parse(R"({ broken = })"));
+    REQUIRE_FALSE(cfg.getError().empty());
+
+    REQUIRE(cfg.parse(R"({ newValue = 2 })"));
+    REQUIRE(cfg.getError().empty());
+    REQUIRE_FALSE(cfg.getRoot().hasProperty("oldValue"));
+    REQUIRE(cfg.getRoot().getInt("newValue") == 2);
+}
+
+TEST_CASE("NodeGraph handles large property sets and long scalar fast paths", "[nodegraph]")
+{
+    std::ostringstream input;
+    input << "{\n";
+    input << "    longString = \"";
+    for (int i = 0; i < 256; ++i)
+        input << char('a' + (i % 26));
+    input << "\"\n";
+    input << "    longIdentifierValue = ";
+    for (int i = 0; i < 32; ++i)
+        input << '9';
+    input << ".25\n";
+    for (int i = 0; i < 300; ++i)
+        input << "    prop" << i << " = " << i << "\n";
+    input << "}\n";
+
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(input.str()));
+
+    const auto& root = cfg.getRoot();
+    REQUIRE(root.properties.size() == 302);
+    REQUIRE(root.getString("longString").size() == 256);
+    REQUIRE(root.getFloat("longIdentifierValue") > 0.0);
+    REQUIRE(root.getInt("prop0") == 0);
+    REQUIRE(root.getInt("prop127") == 127);
+    REQUIRE(root.getInt("prop299") == 299);
+    REQUIRE(root.getInt("missing", -42) == -42);
+}
+
+TEST_CASE("NodeGraph handles deeply nested children", "[nodegraph]")
+{
+    std::ostringstream input;
+    input << "Root {\n";
+    for (int depth = 0; depth < 64; ++depth)
+        input << "Node \"level" << depth << "\" {\n";
+    input << "value = 64\n";
+    for (int depth = 0; depth < 64; ++depth)
+        input << "}\n";
+    input << "}\n";
+
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(input.str()));
+
+    const GraphNode* node = &cfg.getRoot();
+    REQUIRE(node->className == "Root");
+    for (int depth = 0; depth < 64; ++depth) {
+        REQUIRE(node->children.size() == 1);
+        node = node->children[0];
+        REQUIRE(node->className == "Node");
+    }
+    REQUIRE(node->getInt("value") == 64);
+}
+
+TEST_CASE("NodeGraph file parse and save round-trip", "[nodegraph]")
+{
+    auto inputPath = std::filesystem::temp_directory_path() / "node_graph_format_input.ngf";
+    auto outputPath = std::filesystem::temp_directory_path() / "node_graph_format_output.ngf";
+
+    {
+        std::ofstream out(inputPath, std::ios::binary | std::ios::trunc);
+        REQUIRE(out.good());
+        out << "Scene \"File\" {\n"
+            << "    enabled = true\n"
+            << "    value = 42\n"
+            << "}\n";
+    }
+
+    NodeGraph cfg;
+    REQUIRE(cfg.parseFile(inputPath.string()));
+    REQUIRE(cfg.getRoot().className == "Scene");
+    REQUIRE(cfg.getRoot().name == "File");
+    REQUIRE(cfg.getRoot().getBool("enabled"));
+    REQUIRE(cfg.saveFile(outputPath.string()));
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parseFile(outputPath.string()));
+    REQUIRE(reparsed.getRoot().getInt("value") == 42);
+
+    std::filesystem::remove(inputPath);
+    std::filesystem::remove(outputPath);
+}
+
+TEST_CASE("NodeGraph parseFile reports missing files", "[nodegraph]")
+{
+    NodeGraph cfg;
+    auto missingPath = std::filesystem::temp_directory_path() / "node_graph_format_missing_file.ngf";
+    std::filesystem::remove(missingPath);
+
+    REQUIRE_FALSE(cfg.parseFile(missingPath.string()));
+    REQUIRE(cfg.getError().find("Failed to read file") != String::npos);
 }
