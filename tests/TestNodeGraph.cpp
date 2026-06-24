@@ -447,6 +447,30 @@ TEST_CASE("NodeGraph dump format", "[nodegraph]")
     REQUIRE(dumped.find("}") != String::npos);
 }
 
+TEST_CASE("NodeGraph dump quotes non-identifier property names", "[nodegraph]")
+{
+    NodeGraph cfg;
+    auto& root = cfg.getRoot();
+    root.addProperty(cfg.allocString("Light Channel"), NodeValue::makeInt(255));
+
+    String dumped = cfg.dump();
+    REQUIRE(dumped.find("\"Light Channel\" = 255") != String::npos);
+
+    NodeGraph parsed;
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(parsed.parse(dumped));
+    REQUIRE(parsed.getRoot().getInt("Light Channel") == 255);
+}
+
+TEST_CASE("NodeGraph parses legacy unquoted spaced property names", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        Light Channel = 255
+    })"));
+    REQUIRE(cfg.getRoot().getInt("Light Channel") == 255);
+}
+
 TEST_CASE("NodeGraph dump simple array one line", "[nodegraph]")
 {
     NodeGraph cfg;

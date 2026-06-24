@@ -754,6 +754,10 @@ private:
 
         skipWs();
 
+        if (tryParseLegacySpacedPropertyName(ident)) {
+            skipWs();
+        }
+
         std::string_view quotedName;
         if (i < s.length() && s[i] == QUOTE) {
             quotedName = parseQuotedName();
@@ -811,6 +815,41 @@ private:
 
         if (i >= s.length() || s[i] != EQUALS)
             throw parseError(s, i, "'='");
+    }
+
+    bool tryParseLegacySpacedPropertyName(std::string_view& ident)
+    {
+        if (i >= s.length())
+            return false;
+
+        char current = s[i];
+        if (current == QUOTE || current == EQUALS || current == OPENBRACE)
+            return false;
+
+        size_t nameStart = static_cast<size_t>(ident.data() - s.data());
+        size_t pos = i;
+        while (pos < s.length()) {
+            char c = s[pos];
+            if (c == EQUALS) {
+                size_t nameEnd = pos;
+                while (nameEnd > nameStart && kCharTable.isWs(s[nameEnd - 1]))
+                    --nameEnd;
+                if (nameEnd > nameStart) {
+                    ident = s.substr(nameStart, nameEnd - nameStart);
+                    i = pos;
+                    return true;
+                }
+                return false;
+            }
+
+            if (c == '\n' || c == '\r' || c == OPENBRACE || c == CLOSEBRACE || c == OPENSQUARE || c == CLOSESQUARE ||
+                c == COMMA || c == QUOTE) {
+                return false;
+            }
+            ++pos;
+        }
+
+        return false;
     }
 
     void parseObjectBody(GraphNode& node)
@@ -1673,6 +1712,30 @@ NGF_FORCE_INLINE void escapeAndWrite(std::string_view sv, DumpBuffer& out)
     }
 }
 
+NGF_FORCE_INLINE bool isBareIdentifier(std::string_view sv)
+{
+    if (sv.empty())
+        return false;
+
+    for (char c : sv) {
+        if (kCharTable.isIdTerm(c))
+            return false;
+    }
+    return true;
+}
+
+NGF_FORCE_INLINE void writePropertyName(std::string_view name, DumpBuffer& out)
+{
+    if (isBareIdentifier(name)) {
+        out.write(name.data(), name.size());
+        return;
+    }
+
+    out.write('"');
+    escapeAndWrite(name, out);
+    out.write('"');
+}
+
 void serializeValue(const NodeValue& v, int indent, DumpBuffer& out);
 
 void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
@@ -1694,7 +1757,7 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
             out.write("}\n", 2);
             continue;
         }
-        out.write(prop.name.data(), prop.name.size());
+        writePropertyName(prop.name, out);
         out.write(" = ", 3);
         if (prop.value.isObject() && prop.value.asObject()) {
             const auto* obj = prop.value.asObject();
