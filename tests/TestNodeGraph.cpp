@@ -259,6 +259,77 @@ TEST_CASE("NodeGraph complex array", "[nodegraph]")
     REQUIRE(locs->at(1).asObject()->getInt("z") == 6);
 }
 
+TEST_CASE("NodeGraph table array", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        players = [
+            #Player id name position meta
+            1 "name 1" [4, 5, 6] { x = 1 y = 2 }
+            2 "name 2" [7, 8, 9] { x = 3 y = 4 }
+        ]
+    })"));
+
+    const auto& root = cfg.getRoot();
+    auto* players = root.getList("players");
+    REQUIRE(players != nullptr);
+    REQUIRE(players->size() == 2);
+
+    const GraphNode* player1 = players->at(0).asObject();
+    REQUIRE(player1 != nullptr);
+    REQUIRE(player1->className == "Player");
+    REQUIRE(player1->getInt("id") == 1);
+    REQUIRE(player1->getString("name") == "name 1");
+
+    auto* position = player1->getList("position");
+    REQUIRE(position != nullptr);
+    REQUIRE(position->size() == 3);
+    REQUIRE(position->at(0).asInt() == 4);
+    REQUIRE(position->at(2).asInt() == 6);
+
+    const GraphNode* meta = player1->getObject("meta");
+    REQUIRE(meta != nullptr);
+    REQUIRE(meta->getInt("x") == 1);
+    REQUIRE(meta->getInt("y") == 2);
+
+    const GraphNode* player2 = players->at(1).asObject();
+    REQUIRE(player2 != nullptr);
+    REQUIRE(player2->className == "Player");
+    REQUIRE(player2->getInt("id") == 2);
+    REQUIRE(player2->getString("name") == "name 2");
+}
+
+TEST_CASE("NodeGraph nested table array", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"({
+        teams = [
+            #Team id players
+            1 [
+                #Player id name
+                10 "name 10"
+                11 "name 11"
+            ]
+        ]
+    })"));
+
+    auto* teams = cfg.getRoot().getList("teams");
+    REQUIRE(teams != nullptr);
+    REQUIRE(teams->size() == 1);
+
+    const GraphNode* team = teams->at(0).asObject();
+    REQUIRE(team != nullptr);
+    REQUIRE(team->className == "Team");
+    REQUIRE(team->getInt("id") == 1);
+
+    auto* players = team->getList("players");
+    REQUIRE(players != nullptr);
+    REQUIRE(players->size() == 2);
+    REQUIRE(players->at(0).asObject()->className == "Player");
+    REQUIRE(players->at(0).asObject()->getInt("id") == 10);
+    REQUIRE(players->at(1).asObject()->getString("name") == "name 11");
+}
+
 TEST_CASE("NodeGraph comments", "[nodegraph]")
 {
     NodeGraph cfg;

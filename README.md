@@ -153,6 +153,35 @@ Arrays can also contain objects:
 }
 ```
 
+Arrays can use table syntax when every row has the same shape. The first line starts with `#ClassName`
+followed by column names, and each following row supplies one value per column:
+
+```ngf
+{
+    players = [
+        #Player id name position meta
+        1 "name 1" [4, 5, 6] { x = 1 y = 2 }
+        2 "name 2" [7, 8, 9] { x = 3 y = 4 }
+    ]
+}
+```
+
+This parses as a list of `Player` objects with `id`, `name`, `position`, and `meta` properties. Cell values
+use the normal value parser, so inline objects, arrays, and nested tables are valid:
+
+```ngf
+{
+    teams = [
+        #Team id players
+        1 [
+            #Player id name
+            10 "name 10"
+            11 "name 11"
+        ]
+    ]
+}
+```
+
 ### Inline Objects
 
 An inline object can be anonymous:

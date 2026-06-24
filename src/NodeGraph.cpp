@@ -1047,6 +1047,94 @@ private:
         return v;
     }
 
+    struct TableSchema {
+        std::string_view className;
+        std::vector<std::string_view> columns;
+    };
+
+    TableSchema parseTableSchema()
+    {
+        size_t schemaStart = i;
+        size_t schemaEnd = i;
+        while (schemaEnd < s.length() && s[schemaEnd] != LF && s[schemaEnd] != '\r') {
+            if (s[schemaEnd] == SLASH && schemaEnd + 1 < s.length() && s[schemaEnd + 1] == SLASH)
+                break;
+            ++schemaEnd;
+        }
+
+        std::vector<std::string_view> tokens;
+        size_t pos = schemaStart;
+        while (pos < schemaEnd) {
+            while (pos < schemaEnd && (s[pos] == ' ' || s[pos] == '\t' || s[pos] == COMMA))
+                ++pos;
+            size_t tokenStart = pos;
+            while (pos < schemaEnd && s[pos] != ' ' && s[pos] != '\t' && s[pos] != COMMA)
+                ++pos;
+            if (pos > tokenStart)
+                tokens.push_back(s.substr(tokenStart, pos - tokenStart));
+        }
+
+        if (tokens.empty() || tokens[0].empty() || tokens[0][0] != '#')
+            throw parseError(s, schemaStart, "table schema");
+
+        TableSchema schema;
+        if (tokens[0].length() > 1)
+            schema.className = tokens[0].substr(1);
+
+        for (size_t k = 1; k < tokens.size(); ++k)
+            schema.columns.push_back(tokens[k]);
+
+        if (schema.columns.empty())
+            throw parseError(s, schemaStart, "table columns");
+
+        i = schemaEnd;
+        return schema;
+    }
+
+    NodeValue parseTableArray()
+    {
+        TableSchema schema = parseTableSchema();
+        auto v = NodeValue::makeList();
+        v.list.reserve(8);
+
+        while (true) {
+            skipWs();
+            if (i >= s.length())
+                throw parseError(s, i, "']'");
+            if (s[i] == CLOSESQUARE)
+                break;
+
+            auto* row = mPool->create();
+            row->className = schema.className;
+            row->properties.reserve(schema.columns.size());
+
+            for (auto column : schema.columns) {
+                skipWs();
+                if (i >= s.length() || s[i] == CLOSESQUARE)
+                    throw parseError(s, i, "table cell");
+
+                Property prop;
+                prop.name = column;
+                prop.value = parseValue();
+                row->properties.push_back(std::move(prop));
+                row->mIndexDirty = true;
+
+                skipWs();
+                if (i < s.length() && s[i] == COMMA)
+                    ++i;
+            }
+
+            v.list.push_back(NodeValue::makeObject(row));
+
+            skipWs();
+            if (i < s.length() && s[i] == COMMA)
+                ++i;
+        }
+
+        ++i; // skip ']'
+        return v;
+    }
+
     NodeValue parseNumber()
     {
         size_t start = i;
@@ -1442,6 +1530,13 @@ private:
             throw parseError(s, i, "max nesting depth exceeded");
         ++mDepth;
         ++i; // skip '['
+        skipWs();
+        if (i < s.length() && s[i] == '#') {
+            auto table = parseTableArray();
+            --mDepth;
+            return table;
+        }
+
         auto v = NodeValue::makeList();
         v.list.reserve(8);
         while (true) {
