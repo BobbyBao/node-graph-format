@@ -2002,7 +2002,14 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
 {
     if (indent >= kMaxSerializeDepth)
         return;
+    // Pass 1: dump properties that are NOT flagged dumpAfterChildren (these
+    // appear before the node's children in the output).
+    bool hasDeferredProperty = false;
     for (const auto& prop : node.properties) {
+        if (prop.dumpAfterChildren) {
+            hasDeferredProperty = true;
+            continue;
+        }
         out.writeIndent(indent);
         if (!prop.name.empty() && prop.name[0] == '@' && prop.value.isSource()) {
             out.write(prop.name.data(), prop.name.size());
@@ -2055,6 +2062,41 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
         serializeObjectBody(*child, indent + 1, out);
         out.writeIndent(indent);
         out.write("}\n", 2);
+    }
+
+    // Pass 2: dump properties flagged with dumpAfterChildren (these appear
+    // AFTER the node's children). Used by EcsScene to emit `archetypes`
+    // after the Environment child nodes.
+    if (hasDeferredProperty) {
+        if (!node.children.empty())
+            out.write('\n');
+        for (const auto& prop : node.properties) {
+            if (!prop.dumpAfterChildren)
+                continue;
+            out.writeIndent(indent);
+            writePropertyName(prop.name, out);
+            out.write(" = ", 3);
+            if (prop.value.isObject() && prop.value.asObject()) {
+                if (prop.value.format == NodeValue::InlineFormat && canSerializeInlineValue(prop.value)) {
+                    serializeInlineValue(prop.value, indent, out);
+                    out.write('\n');
+                } else if (const auto* obj = prop.value.asObject(); !obj->className.empty()) {
+                    out.write(obj->className.data(), obj->className.size());
+                    out.write(" {\n", 3);
+                    serializeObjectBody(*obj, indent + 1, out);
+                    out.writeIndent(indent);
+                    out.write("}\n", 2);
+                } else {
+                    out.write("{\n", 2);
+                    serializeObjectBody(*obj, indent + 1, out);
+                    out.writeIndent(indent);
+                    out.write("}\n", 2);
+                }
+            } else {
+                serializeValue(prop.value, indent, out);
+                out.write('\n');
+            }
+        }
     }
 }
 

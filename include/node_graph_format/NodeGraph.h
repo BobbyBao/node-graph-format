@@ -91,6 +91,11 @@ struct Property {
     std::string_view name;
     std::string_view label; // quoted name for source blocks
     NodeValue value;
+    /// When true, this property is dumped AFTER the node's children during
+    /// serialization. Used by EcsScene to emit `archetypes = { ... }` after
+    /// the Environment (child) nodes, producing a more readable layout
+    /// (ID first, then child traits, then the bulky ECS data last).
+    bool dumpAfterChildren = false;
 
     Property() = default;
     Property(std::string_view n, NodeValue v);
