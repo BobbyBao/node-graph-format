@@ -106,6 +106,10 @@ struct Property {
 struct GraphNode {
     std::string_view className;
     std::string_view name;
+    // Root object version, set by the `#version N` top-level directive.
+    // 0 means no version directive present (legacy file or unversioned class).
+    // Only meaningful on the root node; child nodes always have version = 0.
+    int version = 0;
     std::vector<Property> properties;
     std::vector<GraphNode*> children; // pool-allocated, not owned
 
@@ -120,6 +124,7 @@ struct GraphNode {
     GraphNode(GraphNode&& o) noexcept
         : className(o.className)
         , name(o.name)
+        , version(o.version)
         , properties(std::move(o.properties))
         , children(std::move(o.children))
         , mIndexDirty(true) // index keys point to old properties memory, must rebuild
@@ -130,6 +135,7 @@ struct GraphNode {
         if (this != &o) {
             className = o.className;
             name = o.name;
+            version = o.version;
             properties = std::move(o.properties);
             children = std::move(o.children);
             mIndexDirty = true;

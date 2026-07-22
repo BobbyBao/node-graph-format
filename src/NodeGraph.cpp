@@ -660,6 +660,7 @@ private:
     static constexpr char OPENSQUARE = '[';
     static constexpr char CLOSESQUARE = ']';
     static constexpr char COMMA = ',';
+    static constexpr char HASH = '#';
 
     bool hasLineBreak(size_t start, size_t end) const
     {
@@ -711,6 +712,17 @@ private:
     void parseRoot(GraphNode& root)
     {
         skipWs();
+
+        // Parse top-level directives before the root object. Directives start
+        // with '#' at column 0 (after whitespace) and take the form
+        // `#name value`. Currently only `#version <int>` is recognized; unknown
+        // directives are parsed (name + single value) and ignored so future
+        // directives don't break older parsers.
+        while (i < s.length() && s[i] == HASH) {
+            parseDirective(root);
+            skipWs();
+        }
+
         if (i < s.length() && s[i] == OPENBRACE) {
             parseObjectBody(root);
             return;
@@ -738,6 +750,35 @@ private:
         skipWs();
         if (i != s.length())
             throw parseError(s, i, "end-of-input");
+    }
+
+    // Parse a single top-level directive. Current char is '#'.
+    // Supported: `#version <int>`. Unknown directives consume their name and
+    // a single value token (number/identifier/string) then are ignored.
+    void parseDirective(GraphNode& root)
+    {
+        ++i; // consume '#'
+        auto name = parseIdentifier();
+        skipWs();
+        if (name == "version") {
+            // Parse an integer version. We accept a bare numeric token.
+            auto v = parseValue();
+            if (v.isInt())
+                root.version = static_cast<int>(v.asInt());
+            else if (v.isFloat())
+                root.version = static_cast<int>(v.asFloat());
+            // Non-int value: leave version = 0 (treated as legacy)
+        } else {
+            // Unknown directive: consume one value token if present and ignore.
+            // This keeps older parsers forward-compatible with new directives.
+            if (i < s.length() && s[i] != '\n' && s[i] != '\r') {
+                size_t lineStart = i;
+                // Skip until end of line (directive is single-line)
+                while (i < s.length() && s[i] != '\n' && s[i] != '\r')
+                    ++i;
+                (void)lineStart;
+            }
+        }
     }
 
     void parseElements(GraphNode& node)
@@ -2305,6 +2346,15 @@ std::string NodeGraph::dump() const
     DumpBuffer out;
     size_t estimated = estimateDumpSize(mRoot) + mRoot.className.size() + mRoot.name.size() + 64;
     out.preSize(estimated);
+
+    // Emit top-level directives before the root object. Only `#version N` is
+    // currently written, and only when the root node has version > 0.
+    if (mRoot.version > 0) {
+        out.write("#version ", 9);
+        auto vstr = std::to_string(mRoot.version);
+        out.write(vstr.data(), vstr.size());
+        out.write("\n", 1);
+    }
 
     if (!mRoot.className.empty()) {
         out.write(mRoot.className.data(), mRoot.className.size());
