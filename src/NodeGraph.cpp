@@ -2106,7 +2106,7 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
     }
 
     // Pass 2: dump properties flagged with dumpAfterChildren (these appear
-    // AFTER the node's children). Used by EcsScene to emit `archetypes`
+    // AFTER the node's children). Used by Scene to emit `archetypes`
     // after the Environment child nodes.
     if (hasDeferredProperty) {
         if (!node.children.empty())
