@@ -10,6 +10,7 @@
 #include <fstream>
 #include <format>
 #include <sstream>
+#include <stdexcept>
 
 #if defined(_M_X64) || defined(__SSE2__) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define NGF_HAS_SSE2 1
@@ -761,13 +762,11 @@ private:
         auto name = parseIdentifier();
         skipWs();
         if (name == "version") {
-            // Parse an integer version. We accept a bare numeric token.
+            size_t valueStart = i;
             auto v = parseValue();
-            if (v.isInt())
-                root.version = static_cast<int>(v.asInt());
-            else if (v.isFloat())
-                root.version = static_cast<int>(v.asFloat());
-            // Non-int value: leave version = 0 (treated as legacy)
+            if (!v.isInt() || v.asInt() < 0 || v.asInt() > std::numeric_limits<int>::max())
+                throw parseError(s, valueStart, "non-negative integer version");
+            root.version = static_cast<int>(v.asInt());
         } else {
             // Unknown directive: consume one value token if present and ignore.
             // This keeps older parsers forward-compatible with new directives.
@@ -996,8 +995,12 @@ private:
             } else {
                 // Inline object - parse remaining elements
                 auto* obj = mPool->create();
+                if (mDepth >= kMaxDepth)
+                    throw parseError(s, i, "max nesting depth exceeded");
+                ++mDepth;
                 parseElements(*obj);
                 consume(CLOSEBRACE);
+                --mDepth;
                 auto value = NodeValue::makeObject(obj);
                 if (!hasLineBreak(openPos, i))
                     value.format = NodeValue::InlineFormat;
@@ -1464,7 +1467,7 @@ private:
                     appendUtf8(result, cp);
                     break;
                 }
-                default: result += s[i]; break;
+                default: throw parseError(s, i - 1, "valid escape sequence");
                 }
             } else {
                 result += s[i];
@@ -1534,7 +1537,7 @@ private:
                     appendUtf8(result, cp);
                     break;
                 }
-                default: result += s[i]; break;
+                default: throw parseError(s, i - 1, "valid escape sequence");
                 }
             } else {
                 result += s[i];
@@ -1663,75 +1666,21 @@ namespace {
 
 static constexpr int kMaxSerializeDepth = 256;
 
-// Output buffer for zero-allocation serialization
+// Output buffer that relies on std::string for allocation failure safety.
 struct DumpBuffer {
-    char* buf = nullptr;
-    char* cursor = nullptr;
-    char* end = nullptr;
-    size_t cap = 0;
-
-    static constexpr size_t kInitCap = 4096;
-
-    DumpBuffer() = default;
-    ~DumpBuffer() { std::free(buf); }
-
-    DumpBuffer(const DumpBuffer&) = delete;
-    DumpBuffer& operator=(const DumpBuffer&) = delete;
-
-    // Pre-allocate buffer based on estimated output size
     void preSize(size_t estimated)
     {
-        if (estimated <= cap) return;
-        size_t used = buf ? static_cast<size_t>(cursor - buf) : 0;
-        auto* newBuf = static_cast<char*>(std::malloc(estimated));
-        if (!newBuf) return;
-        if (buf) {
-            memcpy(newBuf, buf, used);
-            std::free(buf);
-        }
-        buf = newBuf;
-        cursor = buf + used;
-        end = buf + estimated;
-        cap = estimated;
-    }
-
-    NGF_FORCE_INLINE void ensureCapacity(size_t needed)
-    {
-        if (buf && cursor + needed <= end) return;
-        growCapacity(needed);
-    }
-
-    void growCapacity(size_t needed)
-    {
-        size_t used = buf ? static_cast<size_t>(cursor - buf) : 0;
-        size_t newCap = cap < kInitCap ? kInitCap : cap;
-        while (newCap < used + needed) newCap *= 2;
-
-        auto* newBuf = static_cast<char*>(std::realloc(buf, newCap));
-        if (!newBuf) {
-            newBuf = static_cast<char*>(std::malloc(newCap));
-            if (newBuf) {
-                if (buf) memcpy(newBuf, buf, used);
-                std::free(buf);
-            }
-        }
-        buf = newBuf;
-        cursor = buf + used;
-        end = buf + newCap;
-        cap = newCap;
+        buf.reserve(estimated);
     }
 
     NGF_FORCE_INLINE void write(char c)
     {
-        ensureCapacity(1);
-        *cursor++ = c;
+        buf.push_back(c);
     }
 
     NGF_FORCE_INLINE void write(const char* data, size_t len)
     {
-        ensureCapacity(len);
-        memcpy(cursor, data, len);
-        cursor += len;
+        buf.append(data, len);
     }
 
     NGF_FORCE_INLINE void writeIndent(int level)
@@ -1749,11 +1698,11 @@ struct DumpBuffer {
 
     std::string toString()
     {
-        size_t len = static_cast<size_t>(cursor - buf);
-        std::string result(buf, len);
-        cursor = buf; // reset for potential reuse
-        return result;
+        return std::move(buf);
     }
+
+private:
+    std::string buf;
 };
 
 // Custom integer-to-string (avoids std::to_chars overhead)
@@ -1882,6 +1831,54 @@ NGF_FORCE_INLINE bool isBareIdentifier(std::string_view sv)
         if (kCharTable.isIdTerm(c))
             return false;
     }
+    return true;
+}
+
+bool validateNodeForDump(const GraphNode& node, bool requiresClassName, int depth, std::string& error);
+
+bool validateValueForDump(const NodeValue& value, int depth, std::string& error)
+{
+    if (value.type == NodeValue::Object) {
+        return !value.objectVal || validateNodeForDump(*value.objectVal, false, depth + 1, error);
+    }
+
+    if (value.type == NodeValue::List) {
+        for (const auto& element : value.list) {
+            if (!validateValueForDump(element, depth + 1, error))
+                return false;
+        }
+    }
+
+    return true;
+}
+
+bool validateNodeForDump(const GraphNode& node, bool requiresClassName, int depth, std::string& error)
+{
+    if (depth > kMaxSerializeDepth) {
+        error = "Maximum serialization depth exceeded";
+        return false;
+    }
+
+    if ((requiresClassName && node.className.empty()) ||
+        (!node.className.empty() && !isBareIdentifier(node.className))) {
+        error = "Node class names must be non-empty bare identifiers";
+        return false;
+    }
+
+    for (const auto& property : node.properties) {
+        if (!validateValueForDump(property.value, depth, error))
+            return false;
+    }
+
+    for (const auto* child : node.children) {
+        if (!child) {
+            error = "Child nodes must not be null";
+            return false;
+        }
+        if (!validateNodeForDump(*child, true, depth + 1, error))
+            return false;
+    }
+
     return true;
 }
 
@@ -2071,8 +2068,8 @@ void serializeTable(const NodeValue& v, int indent, DumpBuffer& out)
 
 void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
 {
-    if (indent >= kMaxSerializeDepth)
-        return;
+    if (indent > kMaxSerializeDepth)
+        throw std::runtime_error("Maximum serialization depth exceeded");
     // Pass 1: dump properties that are NOT flagged dumpAfterChildren (these
     // appear before the node's children in the output).
     bool hasDeferredProperty = false;
@@ -2345,6 +2342,19 @@ bool NodeGraph::parseFile(const std::string& filePath)
     return parse(std::move(text));
 }
 
+bool NodeGraph::validate(std::string* error) const
+{
+    std::string validationError;
+    if (mRoot.version < 0)
+        validationError = "Root version must be non-negative";
+    else
+        validateNodeForDump(mRoot, false, 1, validationError);
+
+    if (error)
+        *error = validationError;
+    return validationError.empty();
+}
+
 // Estimate output size for pre-allocation
 size_t estimateDumpSize(const GraphNode& node)
 {
@@ -2388,6 +2398,10 @@ size_t estimateDumpSize(const GraphNode& node)
 
 std::string NodeGraph::dump() const
 {
+    std::string validationError;
+    if (!validate(&validationError))
+        throw std::invalid_argument(validationError);
+
     DumpBuffer out;
     size_t estimated = estimateDumpSize(mRoot) + mRoot.className.size() + mRoot.name.size() + 64;
     out.preSize(estimated);
@@ -2419,7 +2433,12 @@ std::string NodeGraph::dump() const
 
 bool NodeGraph::saveFile(const std::string& filePath) const
 {
-    auto text = dump();
+    std::string text;
+    try {
+        text = dump();
+    } catch (const std::exception&) {
+        return false;
+    }
     std::ofstream stream(filePath, std::ios::binary | std::ios::trunc);
     if (!stream)
         return false;

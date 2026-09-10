@@ -383,6 +383,23 @@ const std::vector<ng::NodeValue>* list = root.getList("Position");
 const ng::Property* prop = root.findProperty("@vertex");
 ```
 
+### Validating Programmatic Graphs
+
+When constructing nodes directly, call `validate()` before exporting to
+confirm that class names and nesting are representable by the text format:
+
+```cpp
+std::string error;
+if (!graph.validate(&error)) {
+    throw std::runtime_error(error);
+}
+
+std::string text = graph.dump();
+```
+
+`dump()` throws `std::invalid_argument` when the graph cannot be represented.
+`saveFile()` returns `false` in the same case.
+
 ## CMake Integration
 
 Add the directory and link the target:
@@ -426,6 +443,7 @@ after the owning `NodeGraph` is destroyed or reparsed.
 - Floating-point values are parsed as `double`.
 - `dump()` emits parseable text and preserves integral-looking float values as floats, for example `1.0`.
 - `dump()` preserves parsed table arrays when possible, and emits simple arrays inline.
+- Version directives must use a non-negative integer that fits in `int`.
 - Source block values are stored as `NodeValue::Source`, not normal strings.
 - This library only handles the text graph format. Higher-level object serialization, reflection, or engine binding
   should live outside this library.

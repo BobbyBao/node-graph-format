@@ -4,6 +4,7 @@
 #include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 using namespace ng;
@@ -1337,6 +1338,89 @@ TEST_CASE("NodeGraph rejects malformed unicode escapes", "[nodegraph]")
 
     REQUIRE_FALSE(cfg.parse(R"(Node "bad\u00G0" { value = 1 })"));
     REQUIRE_FALSE(cfg.getError().empty());
+}
+
+TEST_CASE("NodeGraph rejects unknown string and node-name escapes", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE_FALSE(cfg.parse(R"({ value = "a\qb" })"));
+    REQUIRE(cfg.getError().find("valid escape") != String::npos);
+
+    REQUIRE_FALSE(cfg.parse(R"(Node "a\qb" {})"));
+    REQUIRE(cfg.getError().find("valid escape") != String::npos);
+}
+
+TEST_CASE("NodeGraph validates version directives", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse("#version 42\n{}"));
+    REQUIRE(cfg.getRoot().version == 42);
+    REQUIRE(cfg.dump().find("#version 42\n") == 0);
+
+    REQUIRE_FALSE(cfg.parse("#version 1.0\n{}"));
+    REQUIRE_FALSE(cfg.parse("#version -1\n{}"));
+    REQUIRE_FALSE(cfg.parse("#version 2147483648\n{}"));
+    REQUIRE_FALSE(cfg.getError().empty());
+}
+
+TEST_CASE("NodeGraph enforces nesting depth for inline objects", "[nodegraph]")
+{
+    String input = "{ value = ";
+    for (int depth = 0; depth < 256; ++depth)
+        input += "{ value = ";
+    input += "0";
+    for (int depth = 0; depth < 257; ++depth)
+        input += '}';
+
+    NodeGraph cfg;
+    REQUIRE_FALSE(cfg.parse(input));
+    REQUIRE(cfg.getError().find("max nesting depth") != String::npos);
+}
+
+TEST_CASE("NodeGraph rejects unrepresentable programmatic class names", "[nodegraph]")
+{
+    NodeGraph cfg;
+    cfg.getRoot().className = cfg.allocString("Bad Name");
+
+    String error;
+    REQUIRE_FALSE(cfg.validate(&error));
+    REQUIRE(error.find("bare identifiers") != String::npos);
+    REQUIRE_THROWS_AS(cfg.dump(), std::invalid_argument);
+}
+
+TEST_CASE("NodeGraph rejects programmatic graphs beyond dump depth", "[nodegraph]")
+{
+    NodeGraph cfg;
+    auto& root = cfg.getRoot();
+    root.className = cfg.allocString("Root");
+
+    GraphNode* node = &root;
+    for (int depth = 0; depth < 256; ++depth) {
+        GraphNode* child = cfg.createNode();
+        child->className = cfg.allocString("Node");
+        node->children.push_back(child);
+        node = child;
+    }
+
+    String error;
+    REQUIRE_FALSE(cfg.validate(&error));
+    REQUIRE(error.find("Maximum serialization depth") != String::npos);
+    REQUIRE_THROWS_AS(cfg.dump(), std::invalid_argument);
+}
+
+TEST_CASE("NodeGraph dumps large escaped strings", "[nodegraph]")
+{
+    NodeGraph cfg;
+    String controlBytes(8192, '\x01');
+    cfg.getRoot().addProperty(cfg.allocString("payload"),
+        NodeValue::makeString(cfg.allocString(controlBytes)));
+
+    String dumped = cfg.dump();
+    REQUIRE(dumped.find("\\u0001") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    REQUIRE(reparsed.getRoot().getString("payload") == controlBytes);
 }
 
 TEST_CASE("NodeGraph parse resets root and error after failure", "[nodegraph]")

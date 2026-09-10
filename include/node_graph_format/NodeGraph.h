@@ -203,6 +203,9 @@ public:
     bool parse(std::string text);
     bool parseFile(const std::string& filePath);
 
+    // Verify that programmatically constructed nodes can be represented by
+    // the format. Parsed graphs are already valid when parse() succeeds.
+    bool validate(std::string* error = nullptr) const;
     std::string dump() const;
     bool saveFile(const std::string& filePath) const;
 
