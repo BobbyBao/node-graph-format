@@ -694,6 +694,45 @@ TEST_CASE("NodeGraph dump complex array multi line", "[nodegraph]")
     REQUIRE(dumped.find("items = {\n") != String::npos);
 }
 
+TEST_CASE("NodeGraph dump separates adjacent block properties", "[nodegraph]")
+{
+    NodeGraph cfg;
+    REQUIRE(cfg.parse(R"(Node {
+        enabled = true
+        tags = [1, 2]
+        transform = {
+            x = 1
+        }
+        components = {
+            Camera {
+                fov = 60.0
+            }
+            Light {
+                intensity = 1.0
+            }
+        }
+        players = [
+            #Player id
+            1
+            2
+        ]
+    })"));
+
+    String dumped = cfg.dump();
+    INFO("Dumped output:\n" << dumped);
+    REQUIRE(dumped.find("    enabled = true\n    tags = [1, 2]\n\n    transform = {") != String::npos);
+    REQUIRE(dumped.find("    }\n\n    components = {") != String::npos);
+    REQUIRE(dumped.find("    }\n\n    players = [") != String::npos);
+    REQUIRE(dumped.find("        Camera {\n            fov = 60.0\n        }\n\n        Light {") != String::npos);
+    REQUIRE(dumped.find("        #Player id\n        1\n        2\n") != String::npos);
+
+    NodeGraph reparsed;
+    REQUIRE(reparsed.parse(dumped));
+    REQUIRE(reparsed.getRoot().getObject("transform") != nullptr);
+    REQUIRE(reparsed.getRoot().getList("components")->size() == 2);
+    REQUIRE(reparsed.getRoot().getList("players")->size() == 2);
+}
+
 TEST_CASE("NodeGraph dump named node", "[nodegraph]")
 {
     NodeGraph cfg;

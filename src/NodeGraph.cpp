@@ -1936,6 +1936,36 @@ bool canSerializeInlineValue(const NodeValue& v)
     }
 }
 
+bool isBlockValue(const NodeValue& v)
+{
+    if (v.type == NodeValue::Object) {
+        return v.objectVal
+            && !(v.format == NodeValue::InlineFormat && canSerializeInlineValue(v));
+    }
+
+    if (v.type != NodeValue::List)
+        return false;
+
+    if (v.format == NodeValue::TableFormat)
+        return true;
+
+    bool isTypedObjectArray = !v.list.empty();
+    bool isUntypedObjectArray = !v.list.empty();
+    for (const auto& elem : v.list) {
+        if (elem.type != NodeValue::Object || !elem.objectVal) {
+            isTypedObjectArray = false;
+            isUntypedObjectArray = false;
+            break;
+        }
+        if (elem.objectVal->className.empty())
+            isTypedObjectArray = false;
+        else
+            isUntypedObjectArray = false;
+    }
+
+    return isTypedObjectArray || isUntypedObjectArray || !canSerializeInlineValue(v);
+}
+
 void serializeInlineValue(const NodeValue& v, int indent, DumpBuffer& out);
 
 void serializeInlineObject(const GraphNode& obj, int indent, DumpBuffer& out)
@@ -2046,11 +2076,15 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
     // Pass 1: dump properties that are NOT flagged dumpAfterChildren (these
     // appear before the node's children in the output).
     bool hasDeferredProperty = false;
+    bool hasPreviousProperty = false;
     for (const auto& prop : node.properties) {
         if (prop.dumpAfterChildren) {
             hasDeferredProperty = true;
             continue;
         }
+        const bool isBlockProperty = isBlockValue(prop.value);
+        if (hasPreviousProperty && isBlockProperty)
+            out.write('\n');
         out.writeIndent(indent);
         if (!prop.name.empty() && prop.name[0] == '@' && prop.value.isSource()) {
             out.write(prop.name.data(), prop.name.size());
@@ -2063,6 +2097,7 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
             auto sv = prop.value.asString();
             out.write(sv.data(), sv.size());
             out.write("}\n", 2);
+            hasPreviousProperty = true;
             continue;
         }
         writePropertyName(prop.name, out);
@@ -2087,6 +2122,7 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
             serializeValue(prop.value, indent, out);
             out.write('\n');
         }
+        hasPreviousProperty = true;
     }
     if (!node.properties.empty() && !node.children.empty())
         out.write('\n');
@@ -2111,9 +2147,13 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
     if (hasDeferredProperty) {
         if (!node.children.empty())
             out.write('\n');
+        hasPreviousProperty = false;
         for (const auto& prop : node.properties) {
             if (!prop.dumpAfterChildren)
                 continue;
+            const bool isBlockProperty = isBlockValue(prop.value);
+            if (hasPreviousProperty && isBlockProperty)
+                out.write('\n');
             out.writeIndent(indent);
             writePropertyName(prop.name, out);
             out.write(" = ", 3);
@@ -2137,6 +2177,7 @@ void serializeObjectBody(const GraphNode& node, int indent, DumpBuffer& out)
                 serializeValue(prop.value, indent, out);
                 out.write('\n');
             }
+            hasPreviousProperty = true;
         }
     }
 }
@@ -2210,6 +2251,8 @@ void serializeValue(const NodeValue& v, int indent, DumpBuffer& out)
                 serializeObjectBody(*child, indent + 2, out);
                 out.writeIndent(indent + 1);
                 out.write("}\n", 2);
+                if (k + 1 < v.list.size())
+                    out.write('\n');
             }
             out.writeIndent(indent);
             out.write('}');
@@ -2222,6 +2265,8 @@ void serializeValue(const NodeValue& v, int indent, DumpBuffer& out)
                 serializeObjectBody(*child, indent + 2, out);
                 out.writeIndent(indent + 1);
                 out.write("}\n", 2);
+                if (k + 1 < v.list.size())
+                    out.write('\n');
             }
             out.writeIndent(indent);
             out.write('}');
